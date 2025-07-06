@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+:root {
+  --sky-gradient: #e0f2fe;
+}
+
+body {
+  min-height: 100vh;
+  background: var(--sky-gradient);
+  margin: 0;
+  font-family: "Inter", sans-serif; /* optional */
+}
