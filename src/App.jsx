@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import "./App.css";
 import logo from "/vivox.png";
 
@@ -15,31 +15,48 @@ function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [selectedFileName, setSelectedFileName] = useState("");
   const [imageSource, setImageSource] = useState(""); // "camera" or "upload"
+  const [output, setOutput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [aiType, setAIType] = useState(""); // "caption" or "read"
+  const [aiResult, setAIResult] = useState(""); // The text or caption
 
   const videoRef = useRef(null);
   const fileInputRef = useRef(null);
 
+  const BASE_URL = import.meta.env.VITE_BACKEND_URL;
+
+  const startCamera = useCallback(() => {
+    if (videoRef.current?.srcObject) {
+      const tracks = videoRef.current.srcObject.getTracks();
+      tracks.forEach((track) => track.stop());
+      videoRef.current.srcObject = null;
+    }
+
+    setTimeout(async () => {
+      try {
+        const constraints = {
+          video: {
+            facingMode: useBackCamera ? { ideal: "environment" } : "user",
+          },
+        };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
+      } catch (err) {
+        console.error("Camera error:", err);
+      }
+    }, 300);
+  }, [useBackCamera]);
+
   useEffect(() => {
     if (screen === "camera") {
       startCamera();
+      speechSynthesis.cancel();
     }
-  }, [screen]);
-
-  const startCamera = async () => {
-    try {
-      const constraints = {
-        video: {
-          facingMode: useBackCamera ? { ideal: "environment" } : "user",
-        },
-      };
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-    } catch (err) {
-      console.error("Camera error:", err);
-    }
-  };
+  }, [screen, startCamera]);
 
   const handleStartClick = () => {
     setShowModal(true); // Show the popup first
@@ -106,58 +123,131 @@ function App() {
   };
 
   const speakText = (text) => {
+    if (speechSynthesis.speaking) {
+      speechSynthesis.cancel();
+      setIsSpeaking(false);
+      return;
+    }
+
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "en-US"; // or change to 'en-GB', 'fr-FR', etc.
+    utterance.lang = "en-US";
+    utterance.onend = () => setIsSpeaking(false);
     speechSynthesis.speak(utterance);
+    setIsSpeaking(true);
   };
 
   const sendToAI = async (actionType, imageBase64) => {
+    if (!capturedImage) {
+      setOutput("Please capture or select an image first.");
+      speakText("Please capture or select an image first.");
+      return;
+    }
+    setLoading(true);
+    const endpointMap = {
+      caption: "/api/caption/",
+      read: "/api/ocr/",
+      vqa: "/api/vqa/",
+    };
+
+    const endpoint = endpointMap[actionType];
+
+    if (!endpoint) {
+      console.error("Invalid action type:", actionType);
+      return;
+    }
+
     try {
-      const response = await fetch("https://your-ai-api.onrender.com/predict", {
+      const blob = await (await fetch(imageBase64)).blob();
+      const formData = new FormData();
+      formData.append("file", blob, "image.jpg");
+
+      const response = await fetch(`${BASE_URL}${endpoint}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          image: imageBase64,
-          action: actionType, // "read", "caption", etc.
-        }),
+        body: formData,
       });
 
       const result = await response.json();
       console.log("AI response:", result);
 
-      if (actionType === "read") {
-        speakText(result.text);
-      } else if (actionType === "caption") {
-        alert("Caption: " + result.caption);
+      if (actionType === "read" && result.data?.extracted_text) {
+        setAIType("read");
+        setAIResult(result.data.extracted_text);
+        speakText(result.data.extracted_text);
+      } else if (actionType === "caption" && result.data?.caption) {
+        setAIType("caption");
+        setAIResult(result.data.caption);
+        speakText(result.data.caption);
+      } else if (actionType === "vqa" && result.answer) {
+        alert("Answer: " + result.answer);
       }
     } catch (error) {
       console.error("Error sending image to AI:", error);
+      alert("Something went wrong.");
+    } finally {
+      setLoading(false);
     }
   };
 
   const sendQuestionToAI = async () => {
+    setLoading(true);
+
     const formData = new FormData();
-    formData.append("image", capturedImage); // base64 or convert to file
+
+    // ✅ Convert base64 to Blob (mimic real file)
+    const blob = await (await fetch(capturedImage)).blob();
+    formData.append("file", blob, "image.jpg"); // Must be named "file"
+
     if (questionText) {
-      formData.append("question", questionText);
-    }
-    if (audioBlob) {
-      formData.append("voice", audioBlob, "question.webm");
+      formData.append("question", questionText); // Must be named "question"
+    } else {
+      alert("Please enter a question.");
+      return;
     }
 
     try {
-      const response = await fetch("https://your-ai.onrender.com/ask", {
+      const response = await fetch(`${BASE_URL}/api/vqa/`, {
         method: "POST",
         body: formData,
       });
-      const data = await response.json();
-      console.log("AI Response:", data);
 
-      // Optionally speak answer:
-      speakText(data.answer);
+      const data = await response.json();
+      console.log("AI VQA Response:", data);
+
+      if (data.data?.answer) {
+        speakText(data.data.answer);
+      } else {
+        alert("No answer received.");
+      }
     } catch (err) {
-      console.error("Error sending question:", err);
+      console.error("Error sending VQA request:", err);
+      alert("Something went wrong.");
+    } finally {
+      setLoading(false);
     }
+  };
+
+  const callSpeakAPI = async (text) => {
+    const response = await fetch(`${BASE_URL}/api/audio/audio/speak`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const blob = await response.blob();
+    const audioUrl = URL.createObjectURL(blob);
+    new Audio(audioUrl).play();
+  };
+
+  const callTranscribeAPI = async () => {
+    const formData = new FormData();
+    formData.append("audio", audioBlob, "voice.webm");
+
+    const response = await fetch(`${BASE_URL}/api/audio/audio/transcribe`, {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await response.json();
+    console.log("Transcription:", data.text);
   };
 
   const handleRetake = () => {
@@ -265,7 +355,7 @@ function App() {
         </div>
       )}
 
-      {capturedImage && (
+      {!aiResult && showOptions && (
         <div className="mt-6 flex flex-col text-center items-center justify-center">
           <img
             src={capturedImage}
@@ -282,7 +372,7 @@ function App() {
           {showOptions && (
             <div className="space-y-4">
               <button
-                className="bg-sky-600 text-white mr-3 px-4 py-2 rounded-lg "
+                className="bg-sky-600 text-white mr-3 px-4 py-2 rounded-lg"
                 onClick={() => sendToAI("read", capturedImage)}
               >
                 🔊 Read
@@ -338,6 +428,30 @@ function App() {
               )}
             </div>
           )}
+        </div>
+      )}
+      {loading && (
+        <div className="flex flex-col items-center justify-center mt-6">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-4 border-sky-500 border-solid"></div>
+          <p className="text-gray-600 text-sm mt-2">Processing...</p>
+        </div>
+      )}
+
+      {aiResult && (
+        <div className="flex flex-col justify-center mt-4 p-4 bg-gray-100 rounded shadow w-full max-w-sm text-center">
+          <h2 className="text-lg font-semibold mb-2 capitalize">
+            {aiType === "caption" ? "📝 Caption Result" : "🔊 Read Text Result"}
+          </h2>
+          <p className="text-gray-800 mb-3">{aiResult}</p>
+          <button
+            className="bg-sky-600 text-white px-4 py-2 rounded"
+            onClick={() => {
+              speechSynthesis.cancel();
+              speakText(aiResult);
+            }}
+          >
+            🔁 {playing ? "Stop Audio" : "Replay"}
+          </button>
         </div>
       )}
     </>
