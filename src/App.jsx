@@ -227,21 +227,25 @@ function App() {
   };
 
   const callSpeakAPI = async (text) => {
+    const formData = new FormData();
+    formData.append("text", text);
+
     const response = await fetch(`${BASE_URL}/api/audio/audio/speak`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: formData, // ✅ No headers needed; browser sets it automatically
     });
+
     const blob = await response.blob();
     const audioUrl = URL.createObjectURL(blob);
-    new Audio(audioUrl).play();
+    const audio = new Audio(audioUrl);
+    audio.play();
   };
 
   const callTranscribeAPI = async () => {
     const formData = new FormData();
     formData.append("audio", audioBlob, "voice.webm");
 
-    const response = await fetch(`${BASE_URL}/api/audio/audio/transcribe`, {
+    const response = await fetch(`${BASE_URL}api/audio/audio/transcribe`, {
       method: "POST",
       body: formData,
     });
@@ -270,6 +274,40 @@ function App() {
         setImageSource("upload");
       };
       reader.readAsDataURL(file);
+    }
+  };
+
+  useEffect(() => {
+    if (!isRecording && audioBlob) {
+      // Call transcription and speech once recording has stopped
+      handleTranscribeAndSpeak();
+    }
+  }, [isRecording, audioBlob]);
+
+  const handleTranscribeAndSpeak = async () => {
+    setLoading(true);
+
+    const formData = new FormData();
+    formData.append("audio", audioBlob, "voice.webm");
+
+    try {
+      const response = await fetch(`${BASE_URL}/api/audio/audio/transcribe`, {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await response.json();
+      const transcript = data.transcript;
+
+      console.log("Transcribed text:", data.transcript);
+      if (transcript) {
+        callSpeakAPI(transcript); // Read the transcription aloud
+      }
+    } catch (err) {
+      console.error("Transcription error:", err);
+      alert("Failed to transcribe the voice input.");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -438,7 +476,7 @@ function App() {
       )}
 
       {aiResult && (
-        <div className="flex flex-col justify-center mt-4 p-4 bg-gray-100 rounded shadow w-full max-w-sm text-center">
+        <div className="mx-5 mt-4 p-4 bg-gray-100 rounded shadow w-full max-w-sm text-center">
           <h2 className="text-lg font-semibold mb-2 capitalize">
             {aiType === "caption" ? "📝 Caption Result" : "🔊 Read Text Result"}
           </h2>
